@@ -431,20 +431,157 @@
 </tr>`).join('');
     }
 
-    // ─── Render: purchased list (placeholder) ────────────────
+    // ─── Expiry helpers ──────────────────────────────────────
+    function expiryStatus(expiryStr) {
+      if (!expiryStr) return 'none';
+      const now    = new Date(); now.setHours(0, 0, 0, 0);
+      const expiry = new Date(expiryStr + 'T00:00:00');
+      const diff   = Math.ceil((expiry - now) / 86400000);
+      if (diff < 0)  return 'expired';
+      if (diff <= 3) return 'soon';
+      return 'ok';
+    }
+
+    function expiryDiff(expiryStr) {
+      const now    = new Date(); now.setHours(0, 0, 0, 0);
+      const expiry = new Date(expiryStr + 'T00:00:00');
+      return Math.ceil((expiry - now) / 86400000);
+    }
+
+    // ─── Expiry edit state ───────────────────────────────────
+    let editingExpiryId = null;
+
+    function startEditExpiry(id) {
+      editingExpiryId = id;
+      renderPurchasedList();
+      setTimeout(() => {
+        const el = document.getElementById('edit-expiry-year');
+        if (el) el.focus();
+      }, 30);
+    }
+
+    function cancelEditExpiry() {
+      editingExpiryId = null;
+      renderPurchasedList();
+    }
+
+    function saveEditExpiry(id) {
+      const y    = document.getElementById('edit-expiry-year').value;
+      const m    = document.getElementById('edit-expiry-month').value;
+      const d    = document.getElementById('edit-expiry-day').value;
+      const item = purchasedItems.find(i => i.id === id);
+      if (item) {
+        item.expiryDate = `${y}-${pad(m)}-${pad(d)}`;
+        saveData();
+      }
+      editingExpiryId = null;
+      renderPurchasedList();
+    }
+
+    function clearExpiry(id) {
+      const item = purchasedItems.find(i => i.id === id);
+      if (item) { item.expiryDate = null; saveData(); }
+      editingExpiryId = null;
+      renderPurchasedList();
+    }
+
+    // ─── Render: purchased list ──────────────────────────────
     function renderPurchasedList() {
+      const tbody = document.getElementById('purchased-list');
       const empty = document.getElementById('purchased-empty');
       document.getElementById('purchased-count').textContent =
         purchasedItems.length ? `(${purchasedItems.length}件)` : '';
-      // 詳細は Stage 3 で実装
-      const tbody = document.getElementById('purchased-list');
+
       if (purchasedItems.length === 0) {
         tbody.innerHTML = '';
         empty.classList.remove('hidden');
-      } else {
-        empty.classList.add('hidden');
-        tbody.innerHTML = purchasedItems.map(item => `
-<tr class="item-row border-b border-gray-50">
+        return;
+      }
+      empty.classList.add('hidden');
+
+      const now      = new Date(); now.setHours(0, 0, 0, 0);
+      const thisYear = now.getFullYear();
+      const years    = Array.from({ length: 6 }, (_, i) => thisYear + i);
+      const months   = Array.from({ length: 12 }, (_, i) => i + 1);
+      const days     = Array.from({ length: 31 }, (_, i) => i + 1);
+
+      tbody.innerHTML = purchasedItems.map(item => {
+        const status    = expiryStatus(item.expiryDate);
+        const isEditing = item.id === editingExpiryId;
+
+        // 賞味期限セル
+        let expiryCell;
+        if (isEditing) {
+          let ey = thisYear, em = now.getMonth() + 1, ed = now.getDate();
+          if (item.expiryDate) {
+            const parts = item.expiryDate.split('-');
+            ey = parseInt(parts[0]);
+            em = parseInt(parts[1]);
+            ed = parseInt(parts[2]);
+          }
+          expiryCell = `
+<td class="px-5 py-2" style="min-width:280px">
+  <div class="flex items-center gap-1 flex-wrap">
+    <select id="edit-expiry-year"
+      class="border border-amber-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white">
+      ${years.map(y => `<option value="${y}"${y === ey ? ' selected' : ''}>${y}年</option>`).join('')}
+    </select>
+    <select id="edit-expiry-month"
+      class="border border-amber-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white">
+      ${months.map(m => `<option value="${m}"${m === em ? ' selected' : ''}>${m}月</option>`).join('')}
+    </select>
+    <select id="edit-expiry-day"
+      class="border border-amber-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white">
+      ${days.map(d => `<option value="${d}"${d === ed ? ' selected' : ''}>${d}日</option>`).join('')}
+    </select>
+    <button onclick="saveEditExpiry('${esc(item.id)}')"
+      class="icon-btn text-amber-500 hover:bg-amber-50" title="保存">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
+      </svg>
+    </button>
+    <button onclick="cancelEditExpiry()"
+      class="icon-btn text-gray-300 hover:bg-gray-100" title="キャンセル">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+      </svg>
+    </button>
+    ${item.expiryDate
+      ? `<button onclick="clearExpiry('${esc(item.id)}')"
+           class="text-xs text-gray-400 hover:text-red-400 px-2 py-1 rounded-lg hover:bg-red-50 transition-colors">
+           クリア
+         </button>`
+      : ''}
+  </div>
+</td>`;
+        } else {
+          let label = '—';
+          let cls   = 'text-gray-400';
+          let pulse = '';
+          if (item.expiryDate) {
+            const diff = expiryDiff(item.expiryDate);
+            label = formatDate(item.expiryDate);
+            if (status === 'expired') {
+              cls   = 'text-red-500 font-semibold';
+              pulse = 'expiry-pulse';
+              label += ` (${Math.abs(diff)}日超過)`;
+            } else if (status === 'soon') {
+              cls   = 'text-orange-500 font-semibold';
+              label += diff === 0 ? ' (今日まで)' : ` (あと${diff}日)`;
+            }
+          }
+          expiryCell = `
+<td class="px-5 py-3.5 whitespace-nowrap">
+  <span class="${cls} ${pulse} text-sm">${label}</span>
+</td>`;
+        }
+
+        const rowBg = status === 'expired' ? 'bg-red-50/40'
+                    : status === 'soon'    ? 'bg-orange-50/40'
+                    : '';
+
+        return `
+<tr class="item-row border-b border-gray-50 ${rowBg}">
   <td class="px-5 py-3.5 font-medium text-gray-700 whitespace-nowrap">${esc(item.name)}</td>
   <td class="px-5 py-3.5 whitespace-nowrap">
     <span class="inline-block px-2.5 py-0.5 rounded-full text-xs font-medium bg-orange-50 text-orange-700 border border-orange-100">
@@ -452,18 +589,28 @@
     </span>
   </td>
   <td class="px-5 py-3.5 text-gray-500 whitespace-nowrap">${formatDate(item.purchasedDate)}</td>
-  <td class="px-5 py-3.5 text-gray-400 whitespace-nowrap">—</td>
+  ${expiryCell}
   <td class="px-5 py-3.5 whitespace-nowrap">
-    <button class="icon-btn delete-btn text-gray-300 hover:text-red-400 hover:bg-red-50"
-      onclick="deletePurchasedItem('${esc(item.id)}')" title="削除">
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-          d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-      </svg>
-    </button>
+    <div class="flex items-center gap-1">
+      ${!isEditing ? `
+      <button class="icon-btn text-gray-400 hover:text-amber-500 hover:bg-amber-50"
+        onclick="startEditExpiry('${esc(item.id)}')" title="賞味期限を設定">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/>
+        </svg>
+      </button>` : ''}
+      <button class="icon-btn delete-btn text-gray-300 hover:text-red-400 hover:bg-red-50"
+        onclick="deletePurchasedItem('${esc(item.id)}')" title="削除">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+        </svg>
+      </button>
+    </div>
   </td>
-</tr>`).join('');
-      }
+</tr>`;
+      }).join('');
     }
 
     function deletePurchasedItem(id) {
