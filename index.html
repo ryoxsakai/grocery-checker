@@ -242,16 +242,281 @@
     </div>
   </div>
 
-  <!-- ── JavaScript (Stage 2 以降で実装) ────────────────── -->
+  <!-- ── JavaScript ─────────────────────────────────────── -->
   <script>
-    // placeholder – JS is added in Stage 2
-    function toggleForm() {}
-    function addToBuyItem() {}
-    function openCategoryManageModal() {}
-    function closeCategoryManageModal() {}
-    function toggleStorageMode() {}
-    document.getElementById('tobuy-count').textContent    = '';
-    document.getElementById('purchased-count').textContent = '';
+    // ─── State ───────────────────────────────────────────────
+    let toBuyItems     = [];
+    let purchasedItems = [];
+    let categories     = ['野菜', '肉・魚', '乳製品', '飲み物', '調味料', 'その他'];
+    let formCollapsed  = false;
+
+    const TOBUY_KEY     = 'grocery-checker-tobuy';
+    const PURCHASED_KEY = 'grocery-checker-purchased';
+    const CATS_KEY      = 'grocery-checker-categories';
+    const MODE_KEY      = 'grocery-checker-mode';
+    let storageMode     = localStorage.getItem(MODE_KEY) || 'local';
+
+    // ─── Persistence ─────────────────────────────────────────
+    function loadLocal() {
+      try {
+        const st = localStorage.getItem(TOBUY_KEY);
+        const sp = localStorage.getItem(PURCHASED_KEY);
+        const sc = localStorage.getItem(CATS_KEY);
+        if (st) toBuyItems     = JSON.parse(st);
+        if (sp) purchasedItems = JSON.parse(sp);
+        if (sc) categories     = JSON.parse(sc);
+      } catch(e) {}
+    }
+
+    function saveLocal() {
+      localStorage.setItem(TOBUY_KEY,     JSON.stringify(toBuyItems));
+      localStorage.setItem(PURCHASED_KEY, JSON.stringify(purchasedItems));
+      localStorage.setItem(CATS_KEY,      JSON.stringify(categories));
+    }
+
+    function saveData() {
+      saveLocal();
+      // Firebase同期は Stage 4 で追加
+    }
+
+    // ─── Helpers ─────────────────────────────────────────────
+    function todayStr() {
+      return new Date().toISOString().split('T')[0];
+    }
+
+    function pad(n) { return String(n).padStart(2, '0'); }
+
+    function formatDate(str) {
+      if (!str) return '—';
+      const [y, m, d] = str.split('-');
+      return `${y}/${m}/${d}`;
+    }
+
+    function esc(s) {
+      return String(s)
+        .replace(/&/g,  '&amp;')
+        .replace(/</g,  '&lt;')
+        .replace(/>/g,  '&gt;')
+        .replace(/"/g,  '&quot;')
+        .replace(/'/g,  '&#39;');
+    }
+
+    // ─── Storage mode UI ─────────────────────────────────────
+    function updateModeUI() {
+      const toggle = document.getElementById('mode-toggle');
+      const thumb  = document.getElementById('mode-thumb');
+      if (storageMode === 'firebase') {
+        toggle.style.background = '#d97706';
+        thumb.style.transform   = 'translateX(20px)';
+      } else {
+        toggle.style.background = '#d1d5db';
+        thumb.style.transform   = 'translateX(0)';
+      }
+    }
+
+    function toggleStorageMode() {
+      alert('Firebase連携は Stage 4 で実装予定です');
+    }
+
+    // ─── Form ────────────────────────────────────────────────
+    function toggleForm() {
+      formCollapsed = !formCollapsed;
+      const content = document.getElementById('form-content');
+      const chevron = document.getElementById('form-chevron');
+      if (formCollapsed) {
+        content.style.maxHeight = '0';
+        content.style.opacity   = '0';
+        chevron.style.transform = 'rotate(0deg)';
+      } else {
+        content.style.maxHeight = '600px';
+        content.style.opacity   = '1';
+        chevron.style.transform = 'rotate(180deg)';
+      }
+    }
+
+    function addToBuyItem() {
+      const name     = document.getElementById('input-name').value.trim();
+      const category = document.getElementById('input-category').value;
+
+      if (!name) {
+        const inp = document.getElementById('input-name');
+        inp.classList.add('ring-2', 'ring-red-400');
+        inp.focus();
+        setTimeout(() => inp.classList.remove('ring-2', 'ring-red-400'), 1500);
+        return;
+      }
+
+      toBuyItems.push({ id: Date.now().toString(), name, category });
+      saveData();
+      renderToBuyList();
+      document.getElementById('input-name').value = '';
+      document.getElementById('input-name').focus();
+    }
+
+    // ─── To-Buy actions ──────────────────────────────────────
+    function markPurchased(id) {
+      const item = toBuyItems.find(i => i.id === id);
+      if (!item) return;
+      toBuyItems = toBuyItems.filter(i => i.id !== id);
+      purchasedItems.unshift({
+        id:            Date.now().toString(),
+        name:          item.name,
+        category:      item.category,
+        purchasedDate: todayStr(),
+        expiryDate:    null,
+      });
+      saveData();
+      renderToBuyList();
+      renderPurchasedList();
+    }
+
+    function deleteToBuyItem(id) {
+      if (!confirm('このアイテムを削除しますか？')) return;
+      toBuyItems = toBuyItems.filter(i => i.id !== id);
+      saveData();
+      renderToBuyList();
+    }
+
+    // ─── Render: category select ─────────────────────────────
+    function renderCategorySelect() {
+      const sel  = document.getElementById('input-category');
+      const prev = sel.value;
+      sel.innerHTML = categories
+        .map(c => `<option value="${esc(c)}">${esc(c)}</option>`)
+        .join('');
+      if (categories.includes(prev)) sel.value = prev;
+    }
+
+    // ─── Render: to-buy list ─────────────────────────────────
+    function renderToBuyList() {
+      const tbody = document.getElementById('tobuy-list');
+      const empty = document.getElementById('tobuy-empty');
+      document.getElementById('tobuy-count').textContent =
+        toBuyItems.length ? `(${toBuyItems.length}件)` : '';
+
+      if (toBuyItems.length === 0) {
+        tbody.innerHTML = '';
+        empty.classList.remove('hidden');
+        return;
+      }
+      empty.classList.add('hidden');
+
+      tbody.innerHTML = toBuyItems.map(item => `
+<tr class="item-row border-b border-gray-50">
+  <td class="px-5 py-3.5 font-medium text-gray-700 whitespace-nowrap">${esc(item.name)}</td>
+  <td class="px-5 py-3.5 whitespace-nowrap">
+    <span class="inline-block px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700 border border-amber-100">
+      ${esc(item.category)}
+    </span>
+  </td>
+  <td class="px-5 py-3.5 whitespace-nowrap">
+    <div class="flex items-center gap-1">
+      <button
+        class="flex items-center gap-1.5 px-3 py-1.5 bg-green-50 hover:bg-green-100 text-green-700 rounded-lg text-xs font-medium border border-green-200 transition-colors"
+        onclick="markPurchased('${esc(item.id)}')" title="購入済みにする">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
+        </svg>
+        購入済へ
+      </button>
+      <button class="icon-btn delete-btn text-gray-300 hover:text-red-400 hover:bg-red-50"
+        onclick="deleteToBuyItem('${esc(item.id)}')" title="削除">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+        </svg>
+      </button>
+    </div>
+  </td>
+</tr>`).join('');
+    }
+
+    // ─── Render: purchased list (placeholder) ────────────────
+    function renderPurchasedList() {
+      const empty = document.getElementById('purchased-empty');
+      document.getElementById('purchased-count').textContent =
+        purchasedItems.length ? `(${purchasedItems.length}件)` : '';
+      // 詳細は Stage 3 で実装
+      const tbody = document.getElementById('purchased-list');
+      if (purchasedItems.length === 0) {
+        tbody.innerHTML = '';
+        empty.classList.remove('hidden');
+      } else {
+        empty.classList.add('hidden');
+        tbody.innerHTML = purchasedItems.map(item => `
+<tr class="item-row border-b border-gray-50">
+  <td class="px-5 py-3.5 font-medium text-gray-700 whitespace-nowrap">${esc(item.name)}</td>
+  <td class="px-5 py-3.5 whitespace-nowrap">
+    <span class="inline-block px-2.5 py-0.5 rounded-full text-xs font-medium bg-orange-50 text-orange-700 border border-orange-100">
+      ${esc(item.category)}
+    </span>
+  </td>
+  <td class="px-5 py-3.5 text-gray-500 whitespace-nowrap">${formatDate(item.purchasedDate)}</td>
+  <td class="px-5 py-3.5 text-gray-400 whitespace-nowrap">—</td>
+  <td class="px-5 py-3.5 whitespace-nowrap">
+    <button class="icon-btn delete-btn text-gray-300 hover:text-red-400 hover:bg-red-50"
+      onclick="deletePurchasedItem('${esc(item.id)}')" title="削除">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+      </svg>
+    </button>
+  </td>
+</tr>`).join('');
+      }
+    }
+
+    function deletePurchasedItem(id) {
+      if (!confirm('このアイテムを削除しますか？')) return;
+      purchasedItems = purchasedItems.filter(i => i.id !== id);
+      saveData();
+      renderPurchasedList();
+    }
+
+    // ─── Category modal (placeholder) ────────────────────────
+    function openCategoryManageModal() {
+      document.getElementById('category-manage-modal').classList.remove('hidden');
+      renderCategoryList();
+      setTimeout(() => document.getElementById('new-category-input').focus(), 50);
+    }
+
+    function closeCategoryManageModal() {
+      document.getElementById('category-manage-modal').classList.add('hidden');
+    }
+
+    function renderCategoryList() {
+      // Stage 4 で本実装（暫定：リスト表示のみ）
+      const ul = document.getElementById('category-list');
+      ul.innerHTML = categories.map((cat, i) => `
+<li class="flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-gray-50">
+  <span class="flex-1 text-sm text-gray-700">${esc(cat)}</span>
+</li>`).join('');
+    }
+
+    function addCategory() {
+      const inp  = document.getElementById('new-category-input');
+      const name = inp.value.trim();
+      if (!name) { inp.focus(); return; }
+      if (categories.includes(name)) {
+        alert(`「${name}」はすでに存在します`);
+        inp.focus();
+        return;
+      }
+      categories.push(name);
+      saveData();
+      renderCategoryList();
+      renderCategorySelect();
+      document.getElementById('input-category').value = name;
+      inp.value = '';
+      inp.focus();
+    }
+
+    // ─── Init ────────────────────────────────────────────────
+    loadLocal();
+    renderCategorySelect();
+    renderToBuyList();
+    renderPurchasedList();
+    updateModeUI();
   </script>
 
 </body>
