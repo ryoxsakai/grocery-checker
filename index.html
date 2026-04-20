@@ -48,6 +48,9 @@
     .delete-btn { opacity: 0; transition: opacity 0.2s; }
     .item-row:hover .delete-btn { opacity: 1; }
 
+    .edit-btn { opacity: 0.25; transition: opacity 0.2s; }
+    .item-row:hover .edit-btn { opacity: 1; }
+
     #mode-thumb  { transition: transform 0.2s ease; }
     #mode-toggle { transition: background-color 0.2s ease; }
 
@@ -56,6 +59,7 @@
 
     @media (max-width: 640px) {
       .delete-btn { opacity: 1; }
+      .edit-btn   { opacity: 0.4; }
     }
   </style>
 </head>
@@ -520,41 +524,65 @@
       return Math.ceil((expiry - now) / 86400000);
     }
 
-    // ─── Expiry edit state ───────────────────────────────────
-    let editingExpiryId = null;
+    // ─── Item edit state ─────────────────────────────────────
+    let editingItemId = null;
 
-    function startEditExpiry(id) {
-      editingExpiryId = id;
+    function startEditItem(id) {
+      editingItemId = id;
       renderPurchasedList();
       setTimeout(() => {
-        const el = document.getElementById('edit-expiry-year');
-        if (el) el.focus();
+        const el = document.getElementById('edit-item-name');
+        if (el) { el.focus(); el.select(); }
       }, 30);
     }
 
-    function cancelEditExpiry() {
-      editingExpiryId = null;
+    function cancelEditItem() {
+      editingItemId = null;
       renderPurchasedList();
     }
 
-    function saveEditExpiry(id) {
-      const y    = document.getElementById('edit-expiry-year').value;
-      const m    = document.getElementById('edit-expiry-month').value;
-      const d    = document.getElementById('edit-expiry-day').value;
+    function saveEditItem(id) {
       const item = purchasedItems.find(i => i.id === id);
-      if (item) {
-        item.expiryDate = `${y}-${pad(m)}-${pad(d)}`;
-        saveData();
+      if (!item) return;
+
+      const nameEl = document.getElementById('edit-item-name');
+      const name   = nameEl ? nameEl.value.trim() : '';
+      if (!name) {
+        if (nameEl) {
+          nameEl.classList.add('ring-2', 'ring-red-400');
+          nameEl.focus();
+          setTimeout(() => nameEl.classList.remove('ring-2', 'ring-red-400'), 1500);
+        }
+        return;
       }
-      editingExpiryId = null;
+
+      item.name     = name;
+      item.category = document.getElementById('edit-item-category').value;
+
+      const py = document.getElementById('edit-purchased-year').value;
+      const pm = document.getElementById('edit-purchased-month').value;
+      const pd = document.getElementById('edit-purchased-day').value;
+      item.purchasedDate = `${py}-${pad(pm)}-${pad(pd)}`;
+
+      const hasExpiry = document.getElementById('edit-has-expiry').checked;
+      if (hasExpiry) {
+        const ey = document.getElementById('edit-expiry-year').value;
+        const em = document.getElementById('edit-expiry-month').value;
+        const ed = document.getElementById('edit-expiry-day').value;
+        item.expiryDate = `${ey}-${pad(em)}-${pad(ed)}`;
+      } else {
+        item.expiryDate = null;
+      }
+
+      saveData();
+      editingItemId = null;
       renderPurchasedList();
     }
 
-    function clearExpiry(id) {
-      const item = purchasedItems.find(i => i.id === id);
-      if (item) { item.expiryDate = null; saveData(); }
-      editingExpiryId = null;
-      renderPurchasedList();
+    function toggleExpirySelects() {
+      const cb  = document.getElementById('edit-has-expiry');
+      const sel = document.getElementById('edit-expiry-selects');
+      if (cb && sel) sel.style.display = cb.checked ? 'flex' : 'none';
     }
 
     // ─── Render: purchased list ──────────────────────────────
@@ -576,76 +604,106 @@
       const years    = Array.from({ length: 6 }, (_, i) => thisYear + i);
       const months   = Array.from({ length: 12 }, (_, i) => i + 1);
       const days     = Array.from({ length: 31 }, (_, i) => i + 1);
+      const selCls   = 'border border-amber-300 rounded-lg px-1.5 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white';
 
       tbody.innerHTML = purchasedItems.map(item => {
         const status    = expiryStatus(item.expiryDate);
-        const isEditing = item.id === editingExpiryId;
+        const isEditing = item.id === editingItemId;
 
-        // 賞味期限セル
-        let expiryCell;
+        // ── 編集モード行 ─────────────────────────────────────
         if (isEditing) {
+          let py = thisYear, pm = now.getMonth() + 1, pd = now.getDate();
+          if (item.purchasedDate) {
+            const p = item.purchasedDate.split('-');
+            py = parseInt(p[0]); pm = parseInt(p[1]); pd = parseInt(p[2]);
+          }
           let ey = thisYear, em = now.getMonth() + 1, ed = now.getDate();
+          const hasExpiry = !!item.expiryDate;
           if (item.expiryDate) {
-            const parts = item.expiryDate.split('-');
-            ey = parseInt(parts[0]);
-            em = parseInt(parts[1]);
-            ed = parseInt(parts[2]);
+            const p = item.expiryDate.split('-');
+            ey = parseInt(p[0]); em = parseInt(p[1]); ed = parseInt(p[2]);
           }
-          expiryCell = `
-<td class="px-5 py-2" style="min-width:280px">
-  <div class="flex items-center gap-1 flex-wrap">
-    <select id="edit-expiry-year"
-      class="border border-amber-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white">
-      ${years.map(y => `<option value="${y}"${y === ey ? ' selected' : ''}>${y}年</option>`).join('')}
+
+          return `
+<tr class="border-b border-amber-100 bg-amber-50/40">
+  <td class="px-3 py-2">
+    <input id="edit-item-name" type="text" value="${esc(item.name)}"
+      class="w-full min-w-24 border border-amber-300 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+      onkeydown="if(event.key==='Escape') cancelEditItem()"/>
+  </td>
+  <td class="px-3 py-2">
+    <select id="edit-item-category" class="${selCls}">
+      ${categories.map(c => `<option value="${esc(c)}"${c === item.category ? ' selected' : ''}>${esc(c)}</option>`).join('')}
     </select>
-    <select id="edit-expiry-month"
-      class="border border-amber-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white">
-      ${months.map(m => `<option value="${m}"${m === em ? ' selected' : ''}>${m}月</option>`).join('')}
-    </select>
-    <select id="edit-expiry-day"
-      class="border border-amber-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white">
-      ${days.map(d => `<option value="${d}"${d === ed ? ' selected' : ''}>${d}日</option>`).join('')}
-    </select>
-    <button onclick="saveEditExpiry('${esc(item.id)}')"
-      class="icon-btn text-amber-500 hover:bg-amber-50" title="保存">
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
-      </svg>
-    </button>
-    <button onclick="cancelEditExpiry()"
-      class="icon-btn text-gray-300 hover:bg-gray-100" title="キャンセル">
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-      </svg>
-    </button>
-    ${item.expiryDate
-      ? `<button onclick="clearExpiry('${esc(item.id)}')"
-           class="text-xs text-gray-400 hover:text-red-400 px-2 py-1 rounded-lg hover:bg-red-50 transition-colors">
-           クリア
-         </button>`
-      : ''}
-  </div>
-</td>`;
-        } else {
-          let label = '—';
-          let cls   = 'text-gray-400';
-          let pulse = '';
-          if (item.expiryDate) {
-            const diff = expiryDiff(item.expiryDate);
-            label = formatDate(item.expiryDate);
-            if (status === 'expired') {
-              cls   = 'text-red-500 font-semibold';
-              pulse = 'expiry-pulse';
-              label += ` (${Math.abs(diff)}日超過)`;
-            } else if (status === 'soon') {
-              cls   = 'text-orange-500 font-semibold';
-              label += diff === 0 ? ' (今日まで)' : ` (あと${diff}日)`;
-            }
+  </td>
+  <td class="px-3 py-2 whitespace-nowrap">
+    <div class="flex items-center gap-1">
+      <select id="edit-purchased-year" class="${selCls}">
+        ${years.map(y => `<option value="${y}"${y === py ? ' selected' : ''}>${y}年</option>`).join('')}
+      </select>
+      <select id="edit-purchased-month" class="${selCls}">
+        ${months.map(m => `<option value="${m}"${m === pm ? ' selected' : ''}>${m}月</option>`).join('')}
+      </select>
+      <select id="edit-purchased-day" class="${selCls}">
+        ${days.map(d => `<option value="${d}"${d === pd ? ' selected' : ''}>${d}日</option>`).join('')}
+      </select>
+    </div>
+  </td>
+  <td class="px-3 py-2">
+    <div class="flex items-center gap-2 flex-wrap">
+      <label class="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer select-none">
+        <input type="checkbox" id="edit-has-expiry" ${hasExpiry ? 'checked' : ''}
+          onchange="toggleExpirySelects()"
+          class="rounded border-gray-300"/>
+        設定する
+      </label>
+      <div id="edit-expiry-selects" style="display:${hasExpiry ? 'flex' : 'none'};gap:4px;align-items:center;flex-wrap:wrap">
+        <select id="edit-expiry-year" class="${selCls}">
+          ${years.map(y => `<option value="${y}"${y === ey ? ' selected' : ''}>${y}年</option>`).join('')}
+        </select>
+        <select id="edit-expiry-month" class="${selCls}">
+          ${months.map(m => `<option value="${m}"${m === em ? ' selected' : ''}>${m}月</option>`).join('')}
+        </select>
+        <select id="edit-expiry-day" class="${selCls}">
+          ${days.map(d => `<option value="${d}"${d === ed ? ' selected' : ''}>${d}日</option>`).join('')}
+        </select>
+      </div>
+    </div>
+  </td>
+  <td class="px-3 py-2 whitespace-nowrap">
+    <div class="flex items-center gap-1">
+      <button onclick="saveEditItem('${esc(item.id)}')"
+        class="icon-btn text-amber-500 hover:bg-amber-100" title="保存">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
+        </svg>
+      </button>
+      <button onclick="cancelEditItem()"
+        class="icon-btn text-gray-300 hover:bg-gray-100" title="キャンセル">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+  </td>
+</tr>`;
+        }
+
+        // ── 通常行 ───────────────────────────────────────────
+        let label = '—';
+        let cls   = 'text-gray-400';
+        let pulse = '';
+        if (item.expiryDate) {
+          const diff = expiryDiff(item.expiryDate);
+          label = formatDate(item.expiryDate);
+          if (status === 'expired') {
+            cls   = 'text-red-500 font-semibold';
+            pulse = 'expiry-pulse';
+            label += ` (${Math.abs(diff)}日超過)`;
+          } else if (status === 'soon') {
+            cls   = 'text-orange-500 font-semibold';
+            label += diff === 0 ? ' (今日まで)' : ` (あと${diff}日)`;
           }
-          expiryCell = `
-<td class="px-5 py-3.5 whitespace-nowrap">
-  <span class="${cls} ${pulse} text-sm">${label}</span>
-</td>`;
         }
 
         const rowBg = status === 'expired' ? 'bg-red-50/40'
@@ -661,17 +719,19 @@
     </span>
   </td>
   <td class="px-5 py-3.5 text-gray-500 whitespace-nowrap">${formatDate(item.purchasedDate)}</td>
-  ${expiryCell}
+  <td class="px-5 py-3.5 whitespace-nowrap">
+    <span class="${cls} ${pulse} text-sm">${label}</span>
+  </td>
   <td class="px-5 py-3.5 whitespace-nowrap">
     <div class="flex items-center gap-1">
-      ${!isEditing ? `
-      <button class="icon-btn text-gray-400 hover:text-amber-500 hover:bg-amber-50"
-        onclick="startEditExpiry('${esc(item.id)}')" title="賞味期限を設定">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <button class="edit-btn text-gray-400 hover:text-amber-500 hover:bg-amber-50 rounded-full transition-colors"
+        style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border:none;background:transparent;cursor:pointer;"
+        onclick="startEditItem('${esc(item.id)}')" title="編集">
+        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
             d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/>
         </svg>
-      </button>` : ''}
+      </button>
       <button class="icon-btn delete-btn text-gray-300 hover:text-red-400 hover:bg-red-50"
         onclick="deletePurchasedItem('${esc(item.id)}')" title="削除">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -835,7 +895,7 @@
     Object.assign(window, {
       toggleForm, addToBuyItem, toggleStorageMode,
       markPurchased, deleteToBuyItem,
-      startEditExpiry, cancelEditExpiry, saveEditExpiry, clearExpiry, deletePurchasedItem,
+      startEditItem, cancelEditItem, saveEditItem, toggleExpirySelects, deletePurchasedItem,
       openCategoryManageModal, closeCategoryManageModal,
       startEditCategory, cancelEditCategory, saveEditCategory, deleteCategory, addCategory,
     });
