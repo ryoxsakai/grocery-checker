@@ -243,7 +243,22 @@
   </div>
 
   <!-- ── JavaScript ─────────────────────────────────────── -->
-  <script>
+  <script type="module">
+    import { initializeApp }                                  from 'https://www.gstatic.com/firebasejs/12.12.0/firebase-app.js';
+    import { getFirestore, doc, setDoc, getDoc, onSnapshot } from 'https://www.gstatic.com/firebasejs/12.12.0/firebase-firestore.js';
+
+    const firebaseConfig = {
+      apiKey:            'AIzaSyBqE2x92dQfiBchfx8bHhttcA5dlEjBqIw',
+      authDomain:        'grocery-checker-14fd9.firebaseapp.com',
+      projectId:         'grocery-checker-14fd9',
+      storageBucket:     'grocery-checker-14fd9.firebasestorage.app',
+      messagingSenderId: '196806466819',
+      appId:             '1:196806466819:web:206d119f07cfdbed8a1d36',
+    };
+    const fbApp = initializeApp(firebaseConfig);
+    const db    = getFirestore(fbApp);
+    const DOC   = doc(db, 'grocery-checker', 'data');
+
     // ─── State ───────────────────────────────────────────────
     let toBuyItems     = [];
     let purchasedItems = [];
@@ -274,9 +289,11 @@
       localStorage.setItem(CATS_KEY,      JSON.stringify(categories));
     }
 
-    function saveData() {
+    async function saveData() {
       saveLocal();
-      // Firebase同期は Stage 4 で追加
+      if (storageMode === 'firebase') {
+        await setDoc(DOC, { toBuy: toBuyItems, purchased: purchasedItems, categories });
+      }
     }
 
     // ─── Helpers ─────────────────────────────────────────────
@@ -314,8 +331,63 @@
       }
     }
 
-    function toggleStorageMode() {
-      alert('Firebase連携は Stage 4 で実装予定です');
+    // ─── Firebase listener ────────────────────────────────────
+    let fbUnsub = null;
+
+    function enableFirebaseListener() {
+      if (fbUnsub) return;
+      fbUnsub = onSnapshot(DOC, snapshot => {
+        if (storageMode !== 'firebase') return;
+        const data = snapshot.data();
+        if (data) {
+          toBuyItems     = data.toBuy      || [];
+          purchasedItems = data.purchased  || [];
+          categories     = data.categories || ['野菜', '肉・魚', '乳製品', '飲み物', '調味料', 'その他'];
+          saveLocal();
+          renderCategorySelect();
+          renderToBuyList();
+          renderPurchasedList();
+          const modal = document.getElementById('category-manage-modal');
+          if (!modal.classList.contains('hidden') && editingCatIndex === -1) {
+            renderCategoryList();
+          }
+        } else {
+          setDoc(DOC, { toBuy: toBuyItems, purchased: purchasedItems, categories });
+        }
+      });
+    }
+
+    function disableFirebaseListener() {
+      if (fbUnsub) { fbUnsub(); fbUnsub = null; }
+    }
+
+    async function toggleStorageMode() {
+      if (storageMode === 'firebase') {
+        const ok = confirm(
+          'ローカル保存に切り替えます。\n' +
+          'Firebaseとの同期を停止し、このデバイスにのみ保存されます。\n' +
+          '続けますか？'
+        );
+        if (!ok) return;
+        disableFirebaseListener();
+        storageMode = 'local';
+        localStorage.setItem(MODE_KEY, 'local');
+        updateModeUI();
+      } else {
+        const snapshot = await getDoc(DOC);
+        const hasData  = snapshot.exists();
+        const ok = confirm(
+          hasData
+            ? 'Firebaseにデータが存在します。\nFirebaseのデータを優先して同期します（ローカルは上書きされます）。\n続けますか？'
+            : 'Firebaseにデータがありません。\n現在のローカルデータをFirebaseにアップロードして同期します。\n続けますか？'
+        );
+        if (!ok) return;
+        storageMode = 'firebase';
+        localStorage.setItem(MODE_KEY, 'firebase');
+        if (!hasData) await setDoc(DOC, { toBuy: toBuyItems, purchased: purchasedItems, categories });
+        enableFirebaseListener();
+        updateModeUI();
+      }
     }
 
     // ─── Form ────────────────────────────────────────────────
@@ -620,24 +692,125 @@
       renderPurchasedList();
     }
 
-    // ─── Category modal (placeholder) ────────────────────────
+    // ─── Category modal ───────────────────────────────────────
+    let editingCatIndex = -1;
+
     function openCategoryManageModal() {
+      editingCatIndex = -1;
       document.getElementById('category-manage-modal').classList.remove('hidden');
+      document.getElementById('new-category-input').value = '';
       renderCategoryList();
       setTimeout(() => document.getElementById('new-category-input').focus(), 50);
     }
 
     function closeCategoryManageModal() {
       document.getElementById('category-manage-modal').classList.add('hidden');
+      editingCatIndex = -1;
     }
 
     function renderCategoryList() {
-      // Stage 4 で本実装（暫定：リスト表示のみ）
       const ul = document.getElementById('category-list');
-      ul.innerHTML = categories.map((cat, i) => `
-<li class="flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-gray-50">
+      if (categories.length === 0) {
+        ul.innerHTML = '<li class="text-center text-gray-400 text-sm py-4">カテゴリがありません</li>';
+        return;
+      }
+      const allItems = [...toBuyItems, ...purchasedItems];
+      ul.innerHTML = categories.map((cat, i) => {
+        const useCount = allItems.filter(item => item.category === cat).length;
+        if (i === editingCatIndex) {
+          return `
+<li class="flex items-center gap-2 rounded-xl px-3 py-2 bg-amber-50">
+  <input id="edit-cat-input" type="text" value="${esc(cat)}"
+    class="flex-1 border border-amber-300 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+    onkeydown="if(event.key==='Enter') saveEditCategory(${i}); else if(event.key==='Escape') cancelEditCategory()"/>
+  <button onclick="saveEditCategory(${i})"
+    class="icon-btn text-amber-600 hover:bg-amber-100" title="保存">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
+    </svg>
+  </button>
+  <button onclick="cancelEditCategory()"
+    class="icon-btn text-gray-400 hover:bg-gray-100" title="キャンセル">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+    </svg>
+  </button>
+</li>`;
+        }
+        return `
+<li class="flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-gray-50 group">
   <span class="flex-1 text-sm text-gray-700">${esc(cat)}</span>
-</li>`).join('');
+  ${useCount > 0 ? `<span class="text-xs text-gray-400">${useCount}件</span>` : ''}
+  <button onclick="startEditCategory(${i})"
+    class="icon-btn text-gray-300 hover:text-amber-500 hover:bg-amber-50 opacity-0 group-hover:opacity-100 transition-opacity" title="編集">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+        d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/>
+    </svg>
+  </button>
+  <button onclick="deleteCategory(${i})"
+    class="icon-btn text-gray-300 hover:text-red-400 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-opacity" title="削除">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+        d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+    </svg>
+  </button>
+</li>`;
+      }).join('');
+
+      if (editingCatIndex >= 0) {
+        setTimeout(() => {
+          const inp = document.getElementById('edit-cat-input');
+          if (inp) { inp.focus(); inp.select(); }
+        }, 30);
+      }
+    }
+
+    function startEditCategory(i) { editingCatIndex = i; renderCategoryList(); }
+    function cancelEditCategory() { editingCatIndex = -1; renderCategoryList(); }
+
+    function saveEditCategory(i) {
+      const inp     = document.getElementById('edit-cat-input');
+      const newName = inp ? inp.value.trim() : '';
+      if (!newName) { if (inp) inp.focus(); return; }
+      if (newName === categories[i]) { cancelEditCategory(); return; }
+      if (categories.includes(newName)) {
+        alert(`「${newName}」はすでに存在します`);
+        inp.focus();
+        return;
+      }
+      const oldName = categories[i];
+      categories[i] = newName;
+      [...toBuyItems, ...purchasedItems].forEach(item => {
+        if (item.category === oldName) item.category = newName;
+      });
+      saveData();
+      editingCatIndex = -1;
+      renderCategoryList();
+      renderCategorySelect();
+      renderToBuyList();
+      renderPurchasedList();
+    }
+
+    function deleteCategory(i) {
+      const name     = categories[i];
+      const allItems = [...toBuyItems, ...purchasedItems];
+      const useCount = allItems.filter(item => item.category === name).length;
+      const msg = useCount > 0
+        ? `「${name}」は${useCount}件で使用中です。\n削除すると先頭のカテゴリに変更されます。削除しますか？`
+        : `「${name}」を削除しますか？`;
+      if (!confirm(msg)) return;
+      if (useCount > 0) {
+        const fallback = categories.find((_, idx) => idx !== i) || '';
+        allItems.forEach(item => { if (item.category === name) item.category = fallback; });
+      }
+      categories.splice(i, 1);
+      editingCatIndex = -1;
+      saveData();
+      renderCategoryList();
+      renderCategorySelect();
+      renderToBuyList();
+      renderPurchasedList();
     }
 
     function addCategory() {
@@ -658,12 +831,22 @@
       inp.focus();
     }
 
+    // ─── Expose to global scope (inline onclick) ──────────────
+    Object.assign(window, {
+      toggleForm, addToBuyItem, toggleStorageMode,
+      markPurchased, deleteToBuyItem,
+      startEditExpiry, cancelEditExpiry, saveEditExpiry, clearExpiry, deletePurchasedItem,
+      openCategoryManageModal, closeCategoryManageModal,
+      startEditCategory, cancelEditCategory, saveEditCategory, deleteCategory, addCategory,
+    });
+
     // ─── Init ────────────────────────────────────────────────
     loadLocal();
     renderCategorySelect();
     renderToBuyList();
     renderPurchasedList();
     updateModeUI();
+    if (storageMode === 'firebase') enableFirebaseListener();
   </script>
 
 </body>
