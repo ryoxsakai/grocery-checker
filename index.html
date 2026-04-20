@@ -48,8 +48,37 @@
     .delete-btn { opacity: 0; transition: opacity 0.2s; }
     .item-row:hover .delete-btn { opacity: 1; }
 
-    .edit-btn { opacity: 0.25; transition: opacity 0.2s; }
-    .item-row:hover .edit-btn { opacity: 1; }
+    /* 各セルの小さな鉛筆ボタン */
+    .cell-edit-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 0.15s, background-color 0.15s;
+      flex-shrink: 0;
+    }
+    .item-row:hover .cell-edit-btn { opacity: 0.4; }
+    .cell-edit-btn:hover { opacity: 1 !important; background: rgba(245,158,11,0.12); }
+
+    /* 賞味期限プログレスバー */
+    .progress-track {
+      background: #e2e8f0;
+      border-radius: 9999px;
+      height: 5px;
+      overflow: hidden;
+      margin-top: 5px;
+    }
+    .progress-fill {
+      height: 100%;
+      border-radius: 9999px;
+      transition: width 0.5s ease, background-color 0.5s ease;
+    }
 
     #mode-thumb  { transition: transform 0.2s ease; }
     #mode-toggle { transition: background-color 0.2s ease; }
@@ -58,8 +87,8 @@
     input, select, textarea { font-size: 16px !important; }
 
     @media (max-width: 640px) {
-      .delete-btn { opacity: 1; }
-      .edit-btn   { opacity: 0.4; }
+      .delete-btn    { opacity: 1; }
+      .cell-edit-btn { opacity: 0.3; }
     }
   </style>
 </head>
@@ -524,64 +553,118 @@
       return Math.ceil((expiry - now) / 86400000);
     }
 
-    // ─── Item edit state ─────────────────────────────────────
-    let editingItemId = null;
+    // ─── Progress bar helpers ─────────────────────────────────
+    function expiryProgress(purchasedDate, expiryDate) {
+      if (!expiryDate || !purchasedDate) return null;
+      const start = new Date(purchasedDate + 'T00:00:00');
+      const end   = new Date(expiryDate   + 'T00:00:00');
+      const now   = new Date(); now.setHours(0, 0, 0, 0);
+      const total = end - start;
+      if (total <= 0) return 1;
+      return (now - start) / total;
+    }
 
-    function startEditItem(id) {
-      editingItemId = id;
+    function progressColor(ratio) {
+      if (ratio < 0.50) return '#22c55e';
+      if (ratio < 0.75) return '#84cc16';
+      if (ratio < 1.00) return '#f97316';
+      return '#ef4444';
+    }
+
+    // ─── Render helpers ───────────────────────────────────────
+    function pb(id, field) {
+      const titles = { name: '品名を編集', category: 'カテゴリを編集', purchasedDate: '購入日を編集', expiryDate: '賞味期限を編集' };
+      return `<button class="cell-edit-btn" onclick="startEditField('${esc(id)}','${field}')" title="${titles[field]}">
+        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/>
+        </svg>
+      </button>`;
+    }
+
+    function scBtns(id) {
+      return `<button onclick="saveEditField('${esc(id)}')" class="icon-btn text-amber-500 hover:bg-amber-100" title="保存">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
+      </button>
+      <button onclick="cancelEditField()" class="icon-btn text-gray-300 hover:bg-gray-100" title="キャンセル">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+      </button>`;
+    }
+
+    function ymdSelects(y, m, d) {
+      const now = new Date();
+      const ty  = now.getFullYear();
+      const cls = 'border border-amber-300 rounded-lg px-1.5 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white';
+      const yOpts = Array.from({ length: 6 }, (_, i) => ty + i)
+        .map(yr => `<option value="${yr}"${yr === y ? ' selected' : ''}>${yr}年</option>`).join('');
+      const mOpts = Array.from({ length: 12 }, (_, i) => i + 1)
+        .map(mo => `<option value="${mo}"${mo === m ? ' selected' : ''}>${mo}月</option>`).join('');
+      const dOpts = Array.from({ length: 31 }, (_, i) => i + 1)
+        .map(da => `<option value="${da}"${da === d ? ' selected' : ''}>${da}日</option>`).join('');
+      return `<select id="edit-field-year"  class="${cls}">${yOpts}</select>
+              <select id="edit-field-month" class="${cls}">${mOpts}</select>
+              <select id="edit-field-day"   class="${cls}">${dOpts}</select>`;
+    }
+
+    // ─── Field edit state ─────────────────────────────────────
+    let editingField = null; // { id, field: 'name'|'category'|'purchasedDate'|'expiryDate' }
+
+    function startEditField(id, field) {
+      editingField = { id, field };
       renderPurchasedList();
       setTimeout(() => {
-        const el = document.getElementById('edit-item-name');
-        if (el) { el.focus(); el.select(); }
+        const el = document.getElementById('edit-field-input')
+                || document.getElementById('edit-field-select')
+                || document.getElementById('edit-field-year');
+        if (el) { el.focus(); if (el.select) el.select(); }
       }, 30);
     }
 
-    function cancelEditItem() {
-      editingItemId = null;
+    function cancelEditField() {
+      editingField = null;
       renderPurchasedList();
     }
 
-    function saveEditItem(id) {
+    function saveEditField(id) {
       const item = purchasedItems.find(i => i.id === id);
-      if (!item) return;
+      if (!item || !editingField) return;
+      const { field } = editingField;
 
-      const nameEl = document.getElementById('edit-item-name');
-      const name   = nameEl ? nameEl.value.trim() : '';
-      if (!name) {
-        if (nameEl) {
-          nameEl.classList.add('ring-2', 'ring-red-400');
-          nameEl.focus();
-          setTimeout(() => nameEl.classList.remove('ring-2', 'ring-red-400'), 1500);
+      if (field === 'name') {
+        const el  = document.getElementById('edit-field-input');
+        const val = el ? el.value.trim() : '';
+        if (!val) {
+          if (el) { el.classList.add('ring-2','ring-red-400'); el.focus(); setTimeout(() => el.classList.remove('ring-2','ring-red-400'), 1500); }
+          return;
         }
-        return;
-      }
-
-      item.name     = name;
-      item.category = document.getElementById('edit-item-category').value;
-
-      const py = document.getElementById('edit-purchased-year').value;
-      const pm = document.getElementById('edit-purchased-month').value;
-      const pd = document.getElementById('edit-purchased-day').value;
-      item.purchasedDate = `${py}-${pad(pm)}-${pad(pd)}`;
-
-      const hasExpiry = document.getElementById('edit-has-expiry').checked;
-      if (hasExpiry) {
-        const ey = document.getElementById('edit-expiry-year').value;
-        const em = document.getElementById('edit-expiry-month').value;
-        const ed = document.getElementById('edit-expiry-day').value;
-        item.expiryDate = `${ey}-${pad(em)}-${pad(ed)}`;
-      } else {
-        item.expiryDate = null;
+        item.name = val;
+      } else if (field === 'category') {
+        const el = document.getElementById('edit-field-select');
+        if (el) item.category = el.value;
+      } else if (field === 'purchasedDate') {
+        const y = document.getElementById('edit-field-year').value;
+        const m = document.getElementById('edit-field-month').value;
+        const d = document.getElementById('edit-field-day').value;
+        item.purchasedDate = `${y}-${pad(m)}-${pad(d)}`;
+      } else if (field === 'expiryDate') {
+        const hasExp = document.getElementById('edit-field-has-expiry').checked;
+        if (hasExp) {
+          const y = document.getElementById('edit-field-year').value;
+          const m = document.getElementById('edit-field-month').value;
+          const d = document.getElementById('edit-field-day').value;
+          item.expiryDate = `${y}-${pad(m)}-${pad(d)}`;
+        } else {
+          item.expiryDate = null;
+        }
       }
 
       saveData();
-      editingItemId = null;
+      editingField = null;
       renderPurchasedList();
     }
 
-    function toggleExpirySelects() {
-      const cb  = document.getElementById('edit-has-expiry');
-      const sel = document.getElementById('edit-expiry-selects');
+    function toggleExpirySelectsInCell() {
+      const cb  = document.getElementById('edit-field-has-expiry');
+      const sel = document.getElementById('edit-field-expiry-selects');
       if (cb && sel) sel.style.display = cb.checked ? 'flex' : 'none';
     }
 
@@ -599,147 +682,152 @@
       }
       empty.classList.add('hidden');
 
-      const now      = new Date(); now.setHours(0, 0, 0, 0);
-      const thisYear = now.getFullYear();
-      const years    = Array.from({ length: 6 }, (_, i) => thisYear + i);
-      const months   = Array.from({ length: 12 }, (_, i) => i + 1);
-      const days     = Array.from({ length: 31 }, (_, i) => i + 1);
-      const selCls   = 'border border-amber-300 rounded-lg px-1.5 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white';
+      const now = new Date(); now.setHours(0, 0, 0, 0);
+      const ef  = editingField;
+      const isF = (id, f) => ef && ef.id === id && ef.field === f;
 
       tbody.innerHTML = purchasedItems.map(item => {
-        const status    = expiryStatus(item.expiryDate);
-        const isEditing = item.id === editingItemId;
+        const status = expiryStatus(item.expiryDate);
+        const rowBg  = status === 'expired' ? 'bg-red-50/40'
+                     : status === 'soon'    ? 'bg-orange-50/40' : '';
 
-        // ── 編集モード行 ─────────────────────────────────────
-        if (isEditing) {
-          let py = thisYear, pm = now.getMonth() + 1, pd = now.getDate();
-          if (item.purchasedDate) {
-            const p = item.purchasedDate.split('-');
-            py = parseInt(p[0]); pm = parseInt(p[1]); pd = parseInt(p[2]);
-          }
-          let ey = thisYear, em = now.getMonth() + 1, ed = now.getDate();
-          const hasExpiry = !!item.expiryDate;
-          if (item.expiryDate) {
-            const p = item.expiryDate.split('-');
-            ey = parseInt(p[0]); em = parseInt(p[1]); ed = parseInt(p[2]);
-          }
+        // ── 品名セル ─────────────────────────────────────────
+        const nameCell = isF(item.id, 'name') ? `
+<td class="px-3 py-2">
+  <div class="flex items-center gap-1">
+    <input id="edit-field-input" type="text" value="${esc(item.name)}"
+      class="flex-1 min-w-20 border border-amber-300 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+      onkeydown="if(event.key==='Enter') saveEditField('${esc(item.id)}'); else if(event.key==='Escape') cancelEditField()"/>
+    ${scBtns(item.id)}
+  </div>
+</td>` : `
+<td class="px-5 py-3.5">
+  <div class="flex items-center gap-1.5">
+    <span class="font-medium text-gray-700 whitespace-nowrap">${esc(item.name)}</span>
+    ${pb(item.id, 'name')}
+  </div>
+</td>`;
 
-          return `
-<tr class="border-b border-amber-100 bg-amber-50/40">
-  <td class="px-3 py-2">
-    <input id="edit-item-name" type="text" value="${esc(item.name)}"
-      class="w-full min-w-24 border border-amber-300 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
-      onkeydown="if(event.key==='Escape') cancelEditItem()"/>
-  </td>
-  <td class="px-3 py-2">
-    <select id="edit-item-category" class="${selCls}">
+        // ── カテゴリセル ──────────────────────────────────────
+        const catCell = isF(item.id, 'category') ? `
+<td class="px-3 py-2">
+  <div class="flex items-center gap-1">
+    <select id="edit-field-select"
+      class="border border-amber-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white">
       ${categories.map(c => `<option value="${esc(c)}"${c === item.category ? ' selected' : ''}>${esc(c)}</option>`).join('')}
     </select>
-  </td>
-  <td class="px-3 py-2 whitespace-nowrap">
-    <div class="flex items-center gap-1">
-      <select id="edit-purchased-year" class="${selCls}">
-        ${years.map(y => `<option value="${y}"${y === py ? ' selected' : ''}>${y}年</option>`).join('')}
-      </select>
-      <select id="edit-purchased-month" class="${selCls}">
-        ${months.map(m => `<option value="${m}"${m === pm ? ' selected' : ''}>${m}月</option>`).join('')}
-      </select>
-      <select id="edit-purchased-day" class="${selCls}">
-        ${days.map(d => `<option value="${d}"${d === pd ? ' selected' : ''}>${d}日</option>`).join('')}
-      </select>
-    </div>
-  </td>
-  <td class="px-3 py-2">
-    <div class="flex items-center gap-2 flex-wrap">
-      <label class="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer select-none">
-        <input type="checkbox" id="edit-has-expiry" ${hasExpiry ? 'checked' : ''}
-          onchange="toggleExpirySelects()"
-          class="rounded border-gray-300"/>
-        設定する
-      </label>
-      <div id="edit-expiry-selects" style="display:${hasExpiry ? 'flex' : 'none'};gap:4px;align-items:center;flex-wrap:wrap">
-        <select id="edit-expiry-year" class="${selCls}">
-          ${years.map(y => `<option value="${y}"${y === ey ? ' selected' : ''}>${y}年</option>`).join('')}
-        </select>
-        <select id="edit-expiry-month" class="${selCls}">
-          ${months.map(m => `<option value="${m}"${m === em ? ' selected' : ''}>${m}月</option>`).join('')}
-        </select>
-        <select id="edit-expiry-day" class="${selCls}">
-          ${days.map(d => `<option value="${d}"${d === ed ? ' selected' : ''}>${d}日</option>`).join('')}
-        </select>
-      </div>
-    </div>
-  </td>
-  <td class="px-3 py-2 whitespace-nowrap">
-    <div class="flex items-center gap-1">
-      <button onclick="saveEditItem('${esc(item.id)}')"
-        class="icon-btn text-amber-500 hover:bg-amber-100" title="保存">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
-        </svg>
-      </button>
-      <button onclick="cancelEditItem()"
-        class="icon-btn text-gray-300 hover:bg-gray-100" title="キャンセル">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-        </svg>
-      </button>
-    </div>
-  </td>
-</tr>`;
-        }
-
-        // ── 通常行 ───────────────────────────────────────────
-        let label = '—';
-        let cls   = 'text-gray-400';
-        let pulse = '';
-        if (item.expiryDate) {
-          const diff = expiryDiff(item.expiryDate);
-          label = formatDate(item.expiryDate);
-          if (status === 'expired') {
-            cls   = 'text-red-500 font-semibold';
-            pulse = 'expiry-pulse';
-            label += ` (${Math.abs(diff)}日超過)`;
-          } else if (status === 'soon') {
-            cls   = 'text-orange-500 font-semibold';
-            label += diff === 0 ? ' (今日まで)' : ` (あと${diff}日)`;
-          }
-        }
-
-        const rowBg = status === 'expired' ? 'bg-red-50/40'
-                    : status === 'soon'    ? 'bg-orange-50/40'
-                    : '';
-
-        return `
-<tr class="item-row border-b border-gray-50 ${rowBg}">
-  <td class="px-5 py-3.5 font-medium text-gray-700 whitespace-nowrap">${esc(item.name)}</td>
-  <td class="px-5 py-3.5 whitespace-nowrap">
+    ${scBtns(item.id)}
+  </div>
+</td>` : `
+<td class="px-5 py-3.5 whitespace-nowrap">
+  <div class="flex items-center gap-1.5">
     <span class="inline-block px-2.5 py-0.5 rounded-full text-xs font-medium bg-orange-50 text-orange-700 border border-orange-100">
       ${esc(item.category)}
     </span>
-  </td>
-  <td class="px-5 py-3.5 text-gray-500 whitespace-nowrap">${formatDate(item.purchasedDate)}</td>
-  <td class="px-5 py-3.5 whitespace-nowrap">
-    <span class="${cls} ${pulse} text-sm">${label}</span>
-  </td>
-  <td class="px-5 py-3.5 whitespace-nowrap">
-    <div class="flex items-center gap-1">
-      <button class="edit-btn text-gray-400 hover:text-amber-500 hover:bg-amber-50 rounded-full transition-colors"
-        style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border:none;background:transparent;cursor:pointer;"
-        onclick="startEditItem('${esc(item.id)}')" title="編集">
-        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-            d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/>
-        </svg>
-      </button>
-      <button class="icon-btn delete-btn text-gray-300 hover:text-red-400 hover:bg-red-50"
-        onclick="deletePurchasedItem('${esc(item.id)}')" title="削除">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-        </svg>
-      </button>
+    ${pb(item.id, 'category')}
+  </div>
+</td>`;
+
+        // ── 購入日セル ────────────────────────────────────────
+        let py = now.getFullYear(), pm = now.getMonth() + 1, pd = now.getDate();
+        if (item.purchasedDate) {
+          const p = item.purchasedDate.split('-');
+          py = +p[0]; pm = +p[1]; pd = +p[2];
+        }
+        const dateCell = isF(item.id, 'purchasedDate') ? `
+<td class="px-3 py-2">
+  <div class="flex items-center gap-1 flex-wrap">
+    ${ymdSelects(py, pm, pd)}
+    ${scBtns(item.id)}
+  </div>
+</td>` : `
+<td class="px-5 py-3.5">
+  <div class="flex items-center gap-1.5">
+    <span class="text-gray-500 whitespace-nowrap">${formatDate(item.purchasedDate)}</span>
+    ${pb(item.id, 'purchasedDate')}
+  </div>
+</td>`;
+
+        // ── 賞味期限セル（プログレスバー付き） ───────────────
+        let ey = now.getFullYear(), em = now.getMonth() + 1, ed = now.getDate();
+        const hasExpiry = !!item.expiryDate;
+        if (item.expiryDate) {
+          const p = item.expiryDate.split('-');
+          ey = +p[0]; em = +p[1]; ed = +p[2];
+        }
+
+        let expiryCell;
+        if (isF(item.id, 'expiryDate')) {
+          expiryCell = `
+<td class="px-3 py-2">
+  <div class="flex items-center gap-2 flex-wrap">
+    <label class="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer select-none">
+      <input type="checkbox" id="edit-field-has-expiry" ${hasExpiry ? 'checked' : ''}
+        onchange="toggleExpirySelectsInCell()" class="rounded border-gray-300"/>
+      設定する
+    </label>
+    <div id="edit-field-expiry-selects"
+      style="display:${hasExpiry ? 'flex' : 'none'};gap:4px;align-items:center;flex-wrap:wrap">
+      ${ymdSelects(ey, em, ed)}
     </div>
+    ${scBtns(item.id)}
+  </div>
+</td>`;
+        } else {
+          const ratio = expiryProgress(item.purchasedDate, item.expiryDate);
+          let dateLabel = '—', daysLabel = '', daysClass = '';
+          let barHtml = '';
+
+          if (item.expiryDate) {
+            const diff = expiryDiff(item.expiryDate);
+            dateLabel = formatDate(item.expiryDate);
+            if (status === 'expired') {
+              daysLabel = `${Math.abs(diff)}日超過`;
+              daysClass = 'text-red-500 font-semibold expiry-pulse';
+            } else if (status === 'soon') {
+              daysLabel = diff === 0 ? '今日まで' : `あと${diff}日`;
+              daysClass = 'text-orange-500 font-semibold';
+            } else {
+              daysLabel = `あと${diff}日`;
+              daysClass = 'text-green-600 text-xs';
+            }
+            if (ratio !== null) {
+              const pct   = Math.min(ratio * 100, 100).toFixed(1);
+              const color = progressColor(ratio);
+              const pulse = status === 'expired' ? 'expiry-pulse' : '';
+              barHtml = `<div class="progress-track">
+  <div class="progress-fill ${pulse}" style="width:${pct}%;background:${color}"></div>
+</div>`;
+            }
+          }
+
+          expiryCell = `
+<td class="px-5 py-3" style="min-width:170px">
+  <div class="flex items-center justify-between gap-1">
+    <span class="text-gray-500 text-sm whitespace-nowrap">${dateLabel}</span>
+    <div class="flex items-center gap-1">
+      ${daysLabel ? `<span class="${daysClass} text-xs whitespace-nowrap">${daysLabel}</span>` : ''}
+      ${pb(item.id, 'expiryDate')}
+    </div>
+  </div>
+  ${barHtml}
+</td>`;
+        }
+
+        return `
+<tr class="item-row border-b border-gray-50 ${rowBg}">
+  ${nameCell}
+  ${catCell}
+  ${dateCell}
+  ${expiryCell}
+  <td class="px-5 py-3.5 whitespace-nowrap">
+    <button class="icon-btn delete-btn text-gray-300 hover:text-red-400 hover:bg-red-50"
+      onclick="deletePurchasedItem('${esc(item.id)}')" title="削除">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+      </svg>
+    </button>
   </td>
 </tr>`;
       }).join('');
@@ -895,7 +983,7 @@
     Object.assign(window, {
       toggleForm, addToBuyItem, toggleStorageMode,
       markPurchased, deleteToBuyItem,
-      startEditItem, cancelEditItem, saveEditItem, toggleExpirySelects, deletePurchasedItem,
+      startEditField, cancelEditField, saveEditField, toggleExpirySelectsInCell, deletePurchasedItem,
       openCategoryManageModal, closeCategoryManageModal,
       startEditCategory, cancelEditCategory, saveEditCategory, deleteCategory, addCategory,
     });
